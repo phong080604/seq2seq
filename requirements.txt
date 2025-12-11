@@ -1,0 +1,5 @@
+torch
+d2l==1.0.3
+gradio
+numpy
+pickle5; python_version < "3.8"
