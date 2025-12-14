@@ -1,12 +1,3 @@
-"""Utilities for preprocessing and tokenizing sentences for the seq2seq model.
-
-This module provides a minimal `tokenize_sentence` function expected by
-`predictor.py`. It intentionally avoids calling `vocab[...]` (which may
-delegate to d2l internals) when checking membership and instead uses
-`vocab.token_to_idx` and `vocab.unk` which are present on the pickled
-`d2l.torch.Vocab` objects used in this project.
-"""
-
 def _preprocess(text: str) -> str:
     """Normalize spacing and punctuation for a single sentence."""
     if text is None:
@@ -21,7 +12,7 @@ def _preprocess(text: str) -> str:
     return ''.join(out)
 
 
-def tokenize_sentence(text: str, vocab, num_steps: int = 20):
+def tokenize_sentence(text: str, vocab, num_steps: int = 32):
     """Tokenize a single sentence and convert to fixed-length index list.
 
     Returns (indices, valid_len) where `indices` is a list of length `num_steps`
