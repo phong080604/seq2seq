@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Translator - En to Vi</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f7f6; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .container { background: white; padding: 2rem; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); width: 90%; max-width: 800px; }
+        h2 { color: #2d3436; text-align: center; }
+        .translator-box { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        textarea { width: 100%; height: 150px; padding: 12px; border: 1px solid #dfe6e9; border-radius: 8px; resize: none; font-size: 16px; box-sizing: border-box; }
+        button { grid-column: span 2; padding: 12px; background-color: #0984e3; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 18px; transition: background 0.3s; }
+        button:hover { background-color: #74b9ff; }
+        .loading { text-align: center; display: none; margin-top: 10px; color: #636e72; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Dịch Thuật Transformer En-Vi</h2>
+    <div class="translator-box">
+        <textarea id="englishInput" placeholder="Nhập câu tiếng Anh..."></textarea>
+        <textarea id="vietnameseOutput" placeholder="Kết quả dịch..." readonly></textarea>
+        <button onclick="translateText()">Dịch Ngay</button>
+    </div>
+    <div id="loadingStatus" class="loading">Đang xử lý bằng AI...</div>
+</div>
+
+<script type="module">
+    // Import client để gọi API của Hugging Face
+    import { Client } from "https://cdn.jsdelivr.net/npm/@gradio/client/dist/index.min.js";
+
+    window.translateText = async function() {
+        const text = document.getElementById('englishInput').value;
+        const outputField = document.getElementById('vietnameseOutput');
+        const loading = document.getElementById('loadingStatus');
+
+        if (!text.trim()) return;
+
+        loading.style.display = 'block';
+        outputField.value = "Đang dịch...";
+
+        try {
+            // Thay "space864/en-vi-translator" bằng tên Space thực tế của bạn
+            const client = await Client.connect("space864/en-vi-translator");
+            const result = await client.predict("/translate_wrapper", { 
+                text: text, 
+            });
+
+            outputField.value = result.data[0];
+        } catch (error) {
+            console.error(error);
+            outputField.value = "Lỗi kết nối API!";
+        } finally {
+            loading.style.display = 'none';
+        }
+    }
+</script>
+
+</body>
+</html>

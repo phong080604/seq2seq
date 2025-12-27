@@ -1,144 +1,81 @@
 import torch
+import math
 from torch import nn
 from d2l import torch as d2l
 
-class Encoder(nn.Module):
-    """The base encoder interface for the encoder--decoder architecture.
-
-    Defined in :numref:`sec_encoder-decoder`"""
-    def __init__(self):
+class TransformerDecoderBlock(nn.Module):
+    # The i-th block in the Transformer decoder
+    def __init__(self, num_hiddens, ffn_num_hiddens, num_heads, dropout, i):
         super().__init__()
-
-    # Later there can be additional arguments (e.g., length excluding padding)
-    def forward(self, X, *args):
-        raise NotImplementedError
-
-
-class Decoder(nn.Module):
-    """The base decoder interface for the encoder--decoder architecture.
-
-    Defined in :numref:`sec_encoder-decoder`"""
-    def __init__(self):
-        super().__init__()
-
-    # Later there can be additional arguments (e.g., length excluding padding)
-    def init_state(self, enc_all_outputs, *args):
-        raise NotImplementedError
-
+        self.i = i
+        self.attention1 = d2l.MultiHeadAttention(num_hiddens, num_heads,
+                                                 dropout)
+        self.addnorm1 = d2l.AddNorm(num_hiddens, dropout)
+        self.attention2 = d2l.MultiHeadAttention(num_hiddens, num_heads,
+                                                 dropout)
+        self.addnorm2 = d2l.AddNorm(num_hiddens, dropout)
+        self.ffn = d2l.PositionWiseFFN(ffn_num_hiddens, num_hiddens)
+        self.addnorm3 = d2l.AddNorm(num_hiddens, dropout)
 
     def forward(self, X, state):
-        raise NotImplementedError
+        enc_outputs, enc_valid_lens = state[0], state[1]
+        # During training, all the tokens of any output sequence are processed
+        # at the same time, so state[2][self.i] is None as initialized. When
+        # decoding any output sequence token by token during prediction,
+        # state[2][self.i] contains representations of the decoded output at
+        # the i-th block up to the current time step
+        if state[2][self.i] is None:
+            key_values = X
+        else:
+            key_values = torch.cat((state[2][self.i], X), dim=1)
+        state[2][self.i] = key_values
+        if self.training:
+            batch_size, num_steps, _ = X.shape
+            # Shape of dec_valid_lens: (batch_size, num_steps), where every
+            # row is [1, 2, ..., num_steps]
+            dec_valid_lens = torch.arange(
+                1, num_steps + 1, device=X.device).repeat(batch_size, 1)
+        else:
+            dec_valid_lens = None
+        # Self-attention
+        X2 = self.attention1(X, key_values, key_values, dec_valid_lens)
+        Y = self.addnorm1(X, X2)
+        # Encoder-decoder attention. Shape of enc_outputs:
+        # (batch_size, num_steps, num_hiddens)
+        Y2 = self.attention2(Y, enc_outputs, enc_outputs, enc_valid_lens)
+        Z = self.addnorm2(Y, Y2)
+        return self.addnorm3(Z, self.ffn(Z)), state
 
-
-class EncoderDecoder(d2l.Classifier):
-    """The base class for the encoder--decoder architecture.
-
-    Defined in :numref:`sec_encoder-decoder`"""
-    def __init__(self, encoder, decoder):
+class TransformerDecoder(d2l.AttentionDecoder):
+    def __init__(self, vocab_size, num_hiddens, ffn_num_hiddens, num_heads,
+                 num_blks, dropout):
         super().__init__()
-        self.encoder = encoder
-        self.decoder = decoder
-
-    def forward(self, enc_X, dec_X, *args):
-        enc_all_outputs = self.encoder(enc_X, *args)
-        dec_state = self.decoder.init_state(enc_all_outputs, *args)
-        # Return decoder output only
-        return self.decoder(dec_X, dec_state)[0]
-
-
-    def predict_step(self, batch, device, num_steps,
-                     save_attention_weights=False):
-        """Defined in :numref:`sec_seq2seq_training`"""
-        batch = [d2l.to(a, device) for a in batch]
-        src, tgt, src_valid_len, _ = batch
-        enc_all_outputs = self.encoder(src, src_valid_len)
-        dec_state = self.decoder.init_state(enc_all_outputs, src_valid_len)
-        outputs, attention_weights = [d2l.expand_dims(tgt[:, 0], 1), ], []
-        for _ in range(num_steps):
-            Y, dec_state = self.decoder(outputs[-1], dec_state)
-            outputs.append(d2l.argmax(Y, 2))
-            # Save attention weights (to be covered later)
-            if save_attention_weights:
-                attention_weights.append(self.decoder.attention_weights)
-        return d2l.concat(outputs[1:], 1), attention_weights
-
-
-def init_seq2seq(module):
-    """Initialize weights for sequence-to-sequence learning.
-
-    Defined in :numref:`sec_seq2seq`"""
-    if type(module) == nn.Linear:
-         nn.init.xavier_uniform_(module.weight)
-    if type(module) == nn.GRU:
-        for param in module._flat_weights_names:
-            if "weight" in param:
-                nn.init.xavier_uniform_(module._parameters[param])
-
-
-class Seq2SeqEncoder(d2l.Encoder):
-    """The RNN encoder for sequence-to-sequence learning.
-
-    Defined in :numref:`sec_seq2seq`"""
-    def __init__(self, vocab_size, embed_size, num_hiddens, num_layers,
-                 dropout=0):
-        super().__init__()
-        self.embedding = nn.Embedding(vocab_size, embed_size)
-        self.rnn = d2l.GRU(embed_size, num_hiddens, num_layers, dropout)
-        self.apply(init_seq2seq)
-
-    def forward(self, X, *args):
-        # X shape: (batch_size, num_steps)
-        embs = self.embedding(d2l.astype(d2l.transpose(X), d2l.int64))
-        # embs shape: (num_steps, batch_size, embed_size)
-        outputs, state = self.rnn(embs)
-        # outputs shape: (num_steps, batch_size, num_hiddens)
-        # state shape: (num_layers, batch_size, num_hiddens)
-        return outputs, state
-
-class Seq2SeqDecoder(d2l.Decoder):
-    """The RNN decoder for sequence to sequence learning."""
-    def __init__(self, vocab_size, embed_size, num_hiddens, num_layers,
-                 dropout=0):
-        super().__init__()
-        self.embedding = nn.Embedding(vocab_size, embed_size)
-        self.rnn = d2l.GRU(embed_size+num_hiddens, num_hiddens,
-                           num_layers, dropout)
+        self.num_hiddens = num_hiddens
+        self.num_blks = num_blks
+        self.embedding = nn.Embedding(vocab_size, num_hiddens)
+        self.pos_encoding = d2l.PositionalEncoding(num_hiddens, dropout)
+        self.blks = nn.Sequential()
+        for i in range(num_blks):
+            self.blks.add_module("block"+str(i), TransformerDecoderBlock(
+                num_hiddens, ffn_num_hiddens, num_heads, dropout, i))
         self.dense = nn.LazyLinear(vocab_size)
-        self.apply(init_seq2seq)
 
-    def init_state(self, enc_all_outputs, *args):
-        return enc_all_outputs
+    def init_state(self, enc_outputs, enc_valid_lens):
+        return [enc_outputs, enc_valid_lens, [None] * self.num_blks]
 
     def forward(self, X, state):
-        # X shape: (batch_size, num_steps)
-        # embs shape: (num_steps, batch_size, embed_size)
-        embs = self.embedding(X.t().type(torch.int32))
-        enc_output, hidden_state = state
-        # context shape: (batch_size, num_hiddens)
-        context = enc_output[-1]
-        # Broadcast context to (num_steps, batch_size, num_hiddens)
-        context = context.repeat(embs.shape[0], 1, 1)
-        # Concat at the feature dimension
-        embs_and_context = torch.cat((embs, context), -1)
-        outputs, hidden_state = self.rnn(embs_and_context, hidden_state)
-        outputs = self.dense(outputs).swapaxes(0, 1)
-        # outputs shape: (batch_size, num_steps, vocab_size)
-        # hidden_state shape: (num_layers, batch_size, num_hiddens)
-        return outputs, [enc_output, hidden_state]
+        X = self.pos_encoding(self.embedding(X) * math.sqrt(self.num_hiddens))
+        self._attention_weights = [[None] * len(self.blks) for _ in range (2)]
+        for i, blk in enumerate(self.blks):
+            X, state = blk(X, state)
+            # Decoder self-attention weights
+            self._attention_weights[0][
+                i] = blk.attention1.attention.attention_weights
+            # Encoder-decoder attention weights
+            self._attention_weights[1][
+                i] = blk.attention2.attention.attention_weights
+        return self.dense(X), state
 
-class Seq2Seq(d2l.EncoderDecoder):
-    """The RNN encoder--decoder for sequence to sequence learning.
-
-    Defined in :numref:`sec_seq2seq_decoder`"""
-    def __init__(self, encoder, decoder, tgt_pad, lr):
-        super().__init__(encoder, decoder)
-        self.save_hyperparameters()
-
-    def validation_step(self, batch):
-        Y_hat = self(*batch[:-1])
-        self.plot('loss', self.loss(Y_hat, batch[-1]), train=False)
-
-
-    def configure_optimizers(self):
-        # Adam optimizer is used here
-        return torch.optim.Adam(self.parameters(), lr=self.lr)
+    @property
+    def attention_weights(self):
+        return self._attention_weights

@@ -1,77 +1,94 @@
-# predictor.py
 import torch
-import pickle
 from d2l import torch as d2l
-from src.model_defs import Seq2Seq, Seq2SeqEncoder, Seq2SeqDecoder
-from src.text_utils import tokenize_sentence
+from tokenizers import Tokenizer
+# Đảm bảo bạn đã có file model_defs.py chứa TransformerDecoder trong cùng thư mục src
+from src.model_defs import TransformerDecoder 
 
 class Translator:
     def __init__(self, 
                  model_path='assets/seq2seq_model.pth', 
-                 src_vocab_path='assets/src_vocab.pkl', 
-                 tgt_vocab_path='assets/tgt_vocab.pkl'):
+                 src_tokenizer_path='assets/src_tokenizer.json', 
+                 tgt_tokenizer_path='assets/tgt_tokenizer.json'):
         
         self.device = d2l.try_gpu()
         print(f"Loading model on: {self.device}")
 
-        # 1. Load Vocabularies
-        with open(src_vocab_path, 'rb') as f:
-            self.src_vocab = pickle.load(f)
-        with open(tgt_vocab_path, 'rb') as f:
-            self.tgt_vocab = pickle.load(f)
+        # 1. Load BPE Tokenizers (Thay vì dùng pickle)
+        self.src_vocab = Tokenizer.from_file(src_tokenizer_path)
+        self.tgt_vocab = Tokenizer.from_file(tgt_tokenizer_path)
 
-        # 2. Cấu hình Model (Hyperparams phải KHỚP với notebook lúc train)
-        # Trong notebook của bạn: embed=512, hidden=512, layers=3
-        embed_size, num_hiddens, num_layers, dropout = 512, 512, 3, 0.5
+        # 2. Cấu hình Model (Sửa len() thành get_vocab_size())
+        num_hiddens, num_blks, dropout = 256, 2, 0.3
+        ffn_num_hiddens, num_heads = 1024, 4
         
-        encoder = Seq2SeqEncoder(len(self.src_vocab), embed_size, num_hiddens, num_layers, dropout)
-        decoder = Seq2SeqDecoder(len(self.tgt_vocab), embed_size, num_hiddens, num_layers, dropout)
+        encoder = d2l.TransformerEncoder(
+            self.src_vocab.get_vocab_size(), num_hiddens, ffn_num_hiddens, 
+            num_heads, num_blks, dropout)
         
-        # tgt_pad lấy từ vocab
-        self.model = Seq2Seq(encoder, decoder, tgt_pad=self.tgt_vocab['<pad>'], lr=0.0)
+        decoder = TransformerDecoder(
+            self.tgt_vocab.get_vocab_size(), num_hiddens, ffn_num_hiddens, 
+            num_heads, num_blks, dropout)
+        
+        # Lấy ID của token <pad> bằng token_to_id()
+        pad_id = self.tgt_vocab.token_to_id('<pad>')
+        self.model = d2l.Seq2Seq(encoder, decoder, tgt_pad=pad_id, lr=0.0)
         
         # 3. Load Weights
-        # Lưu ý: LazyLinear cần chạy 1 lần forward dummy để khởi tạo shape trước khi load weight
-        # Tuy nhiên, load_state_dict thường xử lý được. Nếu lỗi size mismatch, ta sẽ fix sau.
-        self.model.load_state_dict(torch.load(model_path, map_location=self.device))
+        state_dict = torch.load(model_path, map_location=self.device, weights_only=False)
+        self.model.load_state_dict(state_dict)
         self.model.to(self.device)
-        self.model.eval() # Quan trọng: tắt Dropout
+        self.model.eval() 
 
-    def translate(self, input_text, num_steps=20):
-        """
-        Dịch một câu tiếng Anh sang tiếng Việt
-        """
-        # 1. Tokenize & Convert to Tensor
-        src_indices, valid_len_val = tokenize_sentence(input_text, self.src_vocab, num_steps)
+    def translate(self, input_text, num_steps=32):
+        # Tiền xử lý văn bản
+        input_text = input_text.lower()
         
-        # Tạo batch dimension (Batch size = 1)
-        src_tensor = torch.tensor([src_indices], dtype=torch.long, device=self.device)
-        src_valid_len = torch.tensor([valid_len_val], device=self.device)
+        # Encode chuỗi bằng BPE Tokenizer
+        # BPE tự động chia subwords, không cần split(' ') thủ công
+        encoded = self.src_vocab.encode(input_text)
+        ids = encoded.ids + [self.src_vocab.token_to_id("<eos>")]
+        
+        # Padding / Truncate
+        if len(ids) < num_steps:
+            ids += [self.src_vocab.token_to_id("<pad>")] * (num_steps - len(ids))
+        else:
+            ids = ids[:num_steps]
+            
+        enc_input = torch.tensor([ids], device=self.device) 
+        # Tính valid length dựa trên Pad ID
+        pad_id = self.src_vocab.token_to_id("<pad>")
+        enc_valid_len = (enc_input != pad_id).type(torch.int32).sum(1)
 
-        # 2. Encoder Forward
-        enc_outputs = self.model.encoder(src_tensor, src_valid_len)
-        dec_state = self.model.decoder.init_state(enc_outputs, src_valid_len)
+        # Encoder forward
+        enc_outputs = self.model.encoder(enc_input, enc_valid_len)
+        dec_state = self.model.decoder.init_state(enc_outputs, enc_valid_len)
         
-        # 3. Decoder Loop (Greedy Search)
-        # Bắt đầu với <bos>
-        dec_input = torch.tensor([self.tgt_vocab['<bos>']], device=self.device).unsqueeze(0)
+        # Decoder loop
+        bos_id = self.tgt_vocab.token_to_id('<bos>')
+        eos_id = self.tgt_vocab.token_to_id('<eos>')
         
+        dec_input = torch.tensor([[bos_id]], device=self.device)
         output_tokens = []
         
         for _ in range(num_steps):
-            # Forward decoder một bước
             Y, dec_state = self.model.decoder(dec_input, dec_state)
             
-            # Lấy token có xác suất cao nhất (Argmax)
-            dec_input = Y.argmax(dim=2)
-            pred_idx = dec_input.squeeze().item()
+            # Lấy xác suất cao nhất cho token tiếp theo
+            next_step_logits = Y[:, -1, :] 
+            pred_idx = next_step_logits.argmax(dim=1).item()
             
-            # Kiểm tra <eos>
-            if pred_idx == self.tgt_vocab['<eos>']:
+            if pred_idx == eos_id:
                 break
                 
-            # Convert index -> string token
-            token = self.tgt_vocab.to_tokens(pred_idx)
+            # Chuyển ID thành chữ
+            token = self.tgt_vocab.id_to_token(pred_idx)
+            # Xử lý các token đặc biệt của BPE (ví dụ dấu '##' hoặc 'Ġ') nếu cần
             output_tokens.append(token)
             
-        return " ".join(output_tokens)
+            # Cập nhật dec_input cho bước tiếp theo (Transformer cần context cũ)
+            next_id_tensor = torch.tensor([[pred_idx]], device=self.device)
+            dec_input = torch.cat([dec_input, next_id_tensor], dim=1)
+            
+        # Nối các subwords lại và xóa ký tự đặc biệt của BPE (nếu có)
+        full_translation = " ".join(output_tokens).replace('Ġ', ' ').replace(' ', ' ').strip()
+        return full_translation
