@@ -45,4 +45,4 @@ def evaluate_model_metrics(test_file):
     print(f"{'chr-F Score':<20} | {chrf.score/100:>15.3f}") # Chia 100 để về hệ số 0-1 giống ảnh
 
 if __name__ == "__main__":
-    evaluate_model_metrics("test_balanced_5000.txt")
+    evaluate_model_metrics("dataset/test_5000.txt")
