@@ -18,8 +18,8 @@ class Translator:
         self.tgt_vocab = Tokenizer.from_file(tgt_tokenizer_path)
 
         # 2. Cấu hình Model (Sửa len() thành get_vocab_size())
-        num_hiddens, num_blks, dropout = 256, 2, 0.3
-        ffn_num_hiddens, num_heads = 1024, 4
+        num_hiddens, num_blks, dropout = 256, 2, 0.4
+        ffn_num_hiddens, num_heads = 512, 2
         
         encoder = d2l.TransformerEncoder(
             self.src_vocab.get_vocab_size(), num_hiddens, ffn_num_hiddens, 
@@ -39,7 +39,7 @@ class Translator:
         self.model.to(self.device)
         self.model.eval() 
 
-    def translate(self, input_text, num_steps=32):
+    def translate(self, input_text, num_steps=64):
         # Tiền xử lý văn bản
         input_text = input_text.lower()
         
